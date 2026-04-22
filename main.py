@@ -15,7 +15,11 @@ app = FastAPI(title="Hiring Deployments API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://founder-flow-hiring-frontend-l2ja.vercel.app",
+        "https://founderflow-hiring-frontend-main.vercel.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
