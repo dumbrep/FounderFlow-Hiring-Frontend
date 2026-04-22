@@ -176,21 +176,41 @@ def score_keywords(resume_text: str, job_description: str) -> float:
     """
     Returns float 0.0–1.0
 
-    Combines TF-IDF cosine similarity (50%) with keyword hit rate (50%).
+    Combines pure-Python TF cosine similarity (50%) with keyword hit rate (50%).
     Uses rapidfuzz for fuzzy matching on individual keywords.
     """
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.metrics.pairwise import cosine_similarity
+    import math
+    from collections import Counter
     from rapidfuzz import fuzz
 
-    # Step 1 — TF-IDF cosine similarity
-    vectorizer = TfidfVectorizer(stop_words="english")
-    try:
-        tfidf = vectorizer.fit_transform([job_description, resume_text])
-        tfidf_score = cosine_similarity(tfidf[0:1], tfidf[1:2])[0][0]
-    except ValueError:
-        # Edge case: empty vocabulary
-        tfidf_score = 0.0
+    # Step 1 — Pure-Python TF cosine similarity
+    stop_words = {"the","a","an","is","are","was","were","be","been","being",
+                  "have","has","had","do","does","did","will","would","could",
+                  "should","may","might","shall","can","need","dare","to","of",
+                  "in","for","on","with","at","by","from","as","into","about",
+                  "through","during","before","after","and","but","or","nor",
+                  "not","so","yet","both","either","neither","each","every",
+                  "all","any","few","more","most","other","some","such","no",
+                  "only","own","same","than","too","very","just","because",
+                  "this","that","these","those","it","its","he","she","they",
+                  "we","you","i","me","my","your","his","her","our","their"}
+
+    def tokenize(text):
+        translator = str.maketrans("", "", string.punctuation)
+        return [w for w in text.lower().translate(translator).split() if w not in stop_words and len(w) >= 2]
+
+    def cosine_sim(c1, c2):
+        common = set(c1) & set(c2)
+        dot = sum(c1[k] * c2[k] for k in common)
+        mag1 = math.sqrt(sum(v * v for v in c1.values()))
+        mag2 = math.sqrt(sum(v * v for v in c2.values()))
+        if mag1 == 0 or mag2 == 0:
+            return 0.0
+        return dot / (mag1 * mag2)
+
+    job_tokens = Counter(tokenize(job_description))
+    resume_tokens = Counter(tokenize(resume_text))
+    tfidf_score = cosine_sim(job_tokens, resume_tokens)
 
     # Step 2 — Keyword hit rate
     # Tokenize job description into words
@@ -452,33 +472,44 @@ def score_education(resume_text: str, job_description: str) -> tuple:
 # 4e — Semantic scorer  (weight: 0.05)
 # ------------------------------------------------------------------
 
-_semantic_model = None  # Module-level cache
+_openai_client = None  # Module-level cache
 
 
 def score_semantic(resume_summary: str, job_description: str) -> float:
     """
     Returns float 0.0–1.0
 
-    Uses sentence-transformers 'all-MiniLM-L6-v2' to compute semantic
-    similarity between the resume summary and the job description.
-    Falls back to 0.5 if sentence-transformers is not installed.
+    Uses OpenAI text-embedding-3-small to compute semantic similarity
+    between the resume summary and the job description.
+    Falls back to 0.5 if OPENAI_API_KEY is not set.
     """
-    global _semantic_model
+    import math
 
-    try:
-        from sentence_transformers import SentenceTransformer, util
-    except ImportError:
-        print("Warning: sentence-transformers not installed — semantic score defaults to 0.5")
+    global _openai_client
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print("Warning: OPENAI_API_KEY not set — semantic score defaults to 0.5")
         return 0.5
 
     try:
-        if _semantic_model is None:
-            _semantic_model = SentenceTransformer("all-MiniLM-L6-v2")
+        from openai import OpenAI
 
-        embeddings = _semantic_model.encode(
-            [resume_summary, job_description], convert_to_tensor=True
+        if _openai_client is None:
+            _openai_client = OpenAI(api_key=api_key)
+
+        resp = _openai_client.embeddings.create(
+            model="text-embedding-3-small",
+            input=[resume_summary, job_description],
         )
-        sim = util.cos_sim(embeddings[0], embeddings[1]).item()
+        emb1 = resp.data[0].embedding
+        emb2 = resp.data[1].embedding
+
+        dot = sum(a * b for a, b in zip(emb1, emb2))
+        mag1 = math.sqrt(sum(a * a for a in emb1))
+        mag2 = math.sqrt(sum(b * b for b in emb2))
+        sim = dot / (mag1 * mag2) if mag1 and mag2 else 0.0
+
         return round(max(0.0, min(1.0, sim)), 4)
     except Exception as e:
         print(f"Warning: Semantic scoring failed ({e}) — defaulting to 0.5")
